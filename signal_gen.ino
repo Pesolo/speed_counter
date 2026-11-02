@@ -1,23 +1,31 @@
 
 const int PULSE_PIN = 27;
 
-// One pulse represents one complete wheel revolution
-//const int PPR = 1;
+const float WHEEL_DIAMETER_M = 0.4318;
+const int PULSES_PER_REV = 4;
 
-// Change this value to your wheel diameter in meters
-const float WHEEL_DIAMETER_M = 0.60;
-
-// RPM calculation update interval
-const unsigned long WINDOW_MS = 1000;
+const unsigned long TIMEOUT_MS = 3000;
+const unsigned long PRINT_INTERVAL_MS = 500;
 
 volatile unsigned long pulseCount = 0;
+volatile unsigned long lastPulseUs = 0;
+volatile unsigned long pulsePeriodUs = 0;
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
-unsigned long lastTime = 0;
+unsigned long lastPrintMs = 0;
 
-void IRAM_ATTR onPulse() {
+void IRAM_ATTR countPulse() {
+  unsigned long nowUs = micros();
+
   portENTER_CRITICAL_ISR(&mux);
+
+  if (lastPulseUs != 0) {
+    pulsePeriodUs = nowUs - lastPulseUs;
+  }
+
+  lastPulseUs = nowUs;
   pulseCount++;
+
   portEXIT_CRITICAL_ISR(&mux);
 }
 
@@ -25,47 +33,39 @@ void setup() {
   Serial.begin(115200);
 
   pinMode(PULSE_PIN, INPUT);
+  attachInterrupt(digitalPinToInterrupt(PULSE_PIN), countPulse, RISING);
 
-  attachInterrupt(
-    digitalPinToInterrupt(PULSE_PIN),
-    onPulse,
-    RISING
-  );
-
-  lastTime = millis();
-
-  Serial.println("Wheel Speed Counter Started");
-  Serial.println("RPM and Speed (km/h)");
+  Serial.println("Speed Counter");
 }
 
 void loop() {
-  unsigned long now = millis();
-  unsigned long elapsed = now - lastTime;
+  if (millis() - lastPrintMs >= PRINT_INTERVAL_MS) {
+    lastPrintMs = millis();
 
-  if (elapsed >= WINDOW_MS) {
-    unsigned long count;
+    unsigned long period;
+    unsigned long lastPulse;
+    unsigned long nowUs = micros();
 
     portENTER_CRITICAL(&mux);
-    count = pulseCount;
-    pulseCount = 0;
+    period = pulsePeriodUs;
+    lastPulse = lastPulseUs;
     portEXIT_CRITICAL(&mux);
 
-    // Calculate revolutions per minute
-    float rpm = (count * 60000.0) / elapsed;
+    float rpm = 0.0;
 
-    // Calculate wheel circumference in meters
-    float circumference = PI * WHEEL_DIAMETER_M;
+    bool stopped = (lastPulse == 0) ||
+                   ((unsigned long)(nowUs - lastPulse) >
+                    TIMEOUT_MS * 1000UL);
 
-    // Convert RPM to linear speed in km/h
-    float speedKmh = rpm * circumference * 60.0 / 1000.0;
+    if (!stopped && period > 0) {
+      rpm = 60000000.0 /
+            (period * (float)PULSES_PER_REV);
+    }
 
-    Serial.print("RPM: ");
-    Serial.print(rpm, 1);
+    float speedKmh =
+        rpm * PI * WHEEL_DIAMETER_M * 60.0 / 1000.0;
 
-    Serial.print(" | Speed: ");
-    Serial.print(speedKmh, 2);
-    Serial.println(" km/h");
-
-    lastTime = now;
+    Serial.printf("RPM: %.1f | Speed: %.2f km/h\n",
+                  rpm, speedKmh);
   }
 }
